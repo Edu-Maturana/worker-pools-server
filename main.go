@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -95,3 +98,64 @@ func (d *Dispatcher) Dispatch() {
 		}
 	}
 }
+
+func (d *Dispatcher) Run() {
+	for i := 0; i < d.MaxWorkers; i++ {
+		worker := NewWorker(i, d.WorkerPool)
+		worker.Start()
+	}
+
+	go d.Dispatch()
+}
+
+func RequestHandler(w http.ResponseWriter, r *http.Request, jobQueue chan Job) {
+	if r.Method != "POST" {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+
+	delay, err := time.ParseDuration(r.FormValue("delay"))
+	if err != nil {
+		http.Error(w, "Invalid delay", http.StatusBadRequest)
+		return
+	}
+
+	value, err := strconv.Atoi(r.FormValue("value"))
+	if err != nil {
+		http.Error(w, "Invalid value", http.StatusBadRequest)
+		return
+	}
+
+	name := r.FormValue("name")
+	if name == "" {
+		http.Error(w, "Invalid name", http.StatusBadRequest)
+		return
+	}
+
+	job := Job{Name: name, Delay: delay, Number: value}
+	jobQueue <- job
+	w.WriteHeader(http.StatusCreated)
+}
+
+func main() {
+	const (
+		maxWorkers    = 4
+		maxQueuesSize = 20
+		port          = ":8081"
+	)
+
+	jobQueue := make(chan Job, maxQueuesSize)
+	dispatcher := NewDispatcher(jobQueue, maxWorkers)
+
+	dispatcher.Run()
+	// http://localhost:8081/fib
+	http.HandleFunc("/fib", func(w http.ResponseWriter, r *http.Request) {
+		RequestHandler(w, r, jobQueue)
+	})
+
+	log.Fatal(http.ListenAndServe(port, nil))
+}
+
+// El Dispacher obtendra una cola, que contedra una cola de cada uno de los workers.
+// Una vez que el dispacher reciba un trabajo, esta agarrara de su cola a un worker, y mandara la tarea por ese medio
+// El worker, procesara el trabajao y volvera a agregar su cola de trabajo a la cola del dispacher
